@@ -64,6 +64,7 @@ def _getColorEmit(fn):
             color = '\x1b[0m' # normal
         handler.msg = color + handler.msg + '\x1b[0m'  # normal
         return fn(handler)
+            
     return new
 
 # Some methods to reconfigure the default logger

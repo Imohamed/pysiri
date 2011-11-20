@@ -253,57 +253,29 @@ class SiriServer(HTTPServer):
 
 class SiriHandler(SimpleHTTPRequestHandler):
     keys = {}
+    stream = ''
+    binary = False
+    deflator = zlib.decompressobj()
     def setup(self):
-        self.binary = False
-        self.stream = ''
-        self.deflator = zlib.decompressobj()
         self.connection = self.request
         self.rfile = socket._fileobject(self.request, 'rb', self.rbufsize)
         self.wfile = socket._fileobject(self.request, 'wb', self.wbufsize)
-
-    def handle_one_request(self):
-        try:
-            # catch SSL handshake errors which are normal when
-            # using self-signed certificates
-            SimpleHTTPRequestHandler.handle_one_request(self)
-        except SSL.Error as e:
-            for err2 in e:
-                for err in err2:
-                    lib, func, msg = err
-                    if msg != 'ssl handshake failure':
-                        logger.error('OpenSSL error: %s: %s: %s', lib, func, msg)
-            self.close_connection = True
-            pass
-        except (SSL.SysCallError, SSL.ZeroReturnError):
-            self.close_connection = True
-            pass
-        except Exception as e:
-            raise
 
     def removeLeadingHex(self, data, hexStr):
         length = len(hexStr) / 2
         return data[length:] if data[:length].encode('hex') == hexStr else data
 
-    def handle(self):
+    def do_ACE(self):
+        logger.info(self.headers.__str__().strip())
+        self.keys['X-Ace-Host'] = self.headers['x-ace-host']
         try:
             for line in self.rfile:
-                if not self.binary:
-                    line = line.strip()
-                    if not line:
-                        self.binary = True
-                    else:
-                        logger.info(line)
-                        if line.startswith('X-Ace-Host'):
-                            self.keys['X-Ace-Host'] = line.split()[-1]
-                else:
-                    line = self.removeLeadingHex(line, '0d0a') # newline
-                    line = self.removeLeadingHex(line, 'aaccee02') # ACE header 
-                    self.stream += self.deflator.decompress(line)
-                    self.parse()
-        except SSL.SysCallError as e:
-            logger.exception('SysCallError')
-        except Exception as e:
-            raise
+                line = self.removeLeadingHex(line, '0d0a') # newline
+                line = self.removeLeadingHex(line, 'aaccee02') # ACE header
+                self.stream += self.deflator.decompress(line)
+                self.parse()
+        except SSL.SysCallError:
+            self.finish()
 
     def parse(self):
         import biplist
@@ -323,7 +295,7 @@ class SiriHandler(SimpleHTTPRequestHandler):
                 self.keys['speechId'] = plist['properties']['speechId']
             if 'packets' in plist.get('properties', {}):
                 encodedPackets = []
-                with open('speech.spx', 'a+') as f:
+                with open('data.spx', 'a+') as f:
                     for packet in plist['properties']['packets']:
                         f.write(packet)
                         encodedPackets.append(packet.encode('hex'))
