@@ -234,27 +234,23 @@ class SiriServer(HTTPServer):
     def __init__(self):
         HTTPServer.__init__(self, ('0.0.0.0', 443), SiriHandler)
         ctx = SSL.Context(SSL.SSLv23_METHOD)
-        self.pem = 'tmp.pem'
-        with open('tmp.pem', 'w') as f:
+        pem = 'tmp.pem'
+        with open(pem, 'w') as f:
             f.write(PEM)
-        ctx.use_privatekey_file(self.pem)
-        ctx.use_certificate_file(self.pem)
+        ctx.use_privatekey_file(pem)
+        ctx.use_certificate_file(pem)
         s = socket.socket()
         self.socket = SSL.Connection(ctx, s)
         self.server_bind()
         self.server_activate()
+        os.unlink(pem)
 
     def shutdown_request(self, request):
         request.shutdown()
 
-    def __del__(self):
-        if os.path.exists(self.pem):
-            os.unlink(self.pem)
-
 class SiriHandler(SimpleHTTPRequestHandler):
     keys = {}
     stream = ''
-    binary = False
     deflator = zlib.decompressobj()
     def setup(self):
         self.connection = self.request
@@ -274,8 +270,8 @@ class SiriHandler(SimpleHTTPRequestHandler):
                 line = self.removeLeadingHex(line, 'aaccee02') # ACE header
                 self.stream += self.deflator.decompress(line)
                 self.parse()
-        except SSL.SysCallError:
-            self.finish()
+        except SSL.SysCallError as e:
+            pass
 
     def parse(self):
         import biplist
