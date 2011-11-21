@@ -86,7 +86,6 @@ import pprint
 import httplib
 import optparse
 import commands
-from OpenSSL import SSL
 from select import select
 from cStringIO import StringIO
 from multiprocessing import Process
@@ -230,75 +229,6 @@ class DNSQuery(object):
             packet += ''.join(map(lambda x: chr(int(x)), ip.split('.')))   # 4bytes of IP
         return packet
 
-class SiriServer(HTTPServer):
-    def __init__(self):
-        HTTPServer.__init__(self, ('0.0.0.0', 443), SiriHandler)
-        ctx = SSL.Context(SSL.SSLv23_METHOD)
-        pem = 'tmp.pem'
-        with open(pem, 'w') as f:
-            f.write(PEM)
-        ctx.use_privatekey_file(pem)
-        ctx.use_certificate_file(pem)
-        s = socket.socket()
-        self.socket = SSL.Connection(ctx, s)
-        self.server_bind()
-        self.server_activate()
-        os.unlink(pem)
-
-    def shutdown_request(self, request):
-        request.shutdown()
-
-class SiriHandler(SimpleHTTPRequestHandler):
-    keys = {}
-    stream = ''
-    deflator = zlib.decompressobj()
-    def setup(self):
-        self.connection = self.request
-        self.rfile = socket._fileobject(self.request, 'rb', self.rbufsize)
-        self.wfile = socket._fileobject(self.request, 'wb', self.wbufsize)
-
-    def removeLeadingHex(self, data, hexStr):
-        length = len(hexStr) / 2
-        return data[length:] if data[:length].encode('hex') == hexStr else data
-
-    def do_ACE(self):
-        logger.info(self.headers.__str__().strip())
-        self.keys['X-Ace-Host'] = self.headers['x-ace-host']
-        try:
-            for line in self.rfile:
-                line = self.removeLeadingHex(line, '0d0a') # newline
-                line = self.removeLeadingHex(line, 'aaccee02') # ACE header
-                self.stream += self.deflator.decompress(line)
-                self.parse()
-        except SSL.SysCallError as e:
-            pass
-
-    def parse(self):
-        import biplist
-        header = self.stream[:5].encode('hex')
-        if header.startswith('030000'): # Ignore PING requests
-            logger.info('PING: %d', int(header[-4:], 16))
-            self.stream = self.stream[5:]
-        header = self.stream[:5].encode('hex')
-        chunkSize = 1000000 if not header.startswith('0200') else int(header[-6:], 16)
-        if chunkSize < len(self.stream) + 5:
-            plistData = self.stream[5:chunkSize + 5]
-            plist = biplist.readPlistFromString(plistData)
-            if 'sessionValidationData' in plist.get('properties', {}):
-                plist['properties']['sessionValidationData'] = plist['properties']['sessionValidationData'].encode('hex')
-                self.keys['sessionValidationData'] = plist['properties']['sessionValidationData']
-                self.keys['assistantId'] = plist['properties']['assistantId']
-                self.keys['speechId'] = plist['properties']['speechId']
-            if 'packets' in plist.get('properties', {}):
-                encodedPackets = []
-                with open('data.spx', 'a+') as f:
-                    for packet in plist['properties']['packets']:
-                        f.write(packet)
-                        encodedPackets.append(packet.encode('hex'))
-                plist['properties']['packets'] = encodedPackets
-            logger.info(pprint.pformat(plist))
-            self.stream = self.stream[chunkSize+5:]
-
 def dnsServer(local):
     udps = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udps.bind(('', 53))
@@ -318,21 +248,83 @@ def dnsServer(local):
         logger.info('[DNS] Shutting down DNS server')
         udps.close()
 
+def removeLeadingHex(data, hexStr):
+    length = len(hexStr) / 2
+    return data[length:] if data[:length].encode('hex') == hexStr else data
+
+def handleClient(conn, keys, stream, deflator):
+    header = conn.read()
+    logger.info(header.strip())
+    keys['X-Ace-Host'] = header.split('\r\n')[-3].split(': ')[1]
+    data = conn.read()
+    while data:
+        line = removeLeadingHex(data, '0d0a') # newline
+        line = removeLeadingHex(line, 'aaccee02') # ACE header
+        stream += deflator.decompress(line)
+        stream, keys = parse(stream, keys)
+        data = conn.read()
+    return keys
+
+def parse(stream, keys):
+    import biplist
+    header = stream[:5].encode('hex')
+    if header.startswith('030000'): # Ignore PING requests
+        logger.info('PING: %d', int(header[-4:], 16))
+        stream = stream[5:]
+    header = stream[:5].encode('hex')
+    chunkSize = 1000000 if not header.startswith('0200') else int(header[-6:], 16)
+    if chunkSize < len(stream) + 5:
+        plistData = stream[5:chunkSize + 5]
+        plist = biplist.readPlistFromString(plistData)
+        if 'sessionValidationData' in plist.get('properties', {}):
+            plist['properties']['sessionValidationData'] = plist['properties']['sessionValidationData'].encode('hex')
+            keys['sessionValidationData'] = plist['properties']['sessionValidationData']
+            keys['assistantId'] = plist['properties']['assistantId']
+            keys['speechId'] = plist['properties']['speechId']
+        if 'packets' in plist.get('properties', {}):
+            encodedPackets = []
+            with open('data.spx', 'a+') as f:
+                for packet in plist['properties']['packets']:
+                    f.write(packet)
+                    encodedPackets.append(packet.encode('hex'))
+            plist['properties']['packets'] = encodedPackets
+        logger.info(pprint.pformat(plist))
+        stream = stream[chunkSize+5:]
+    return stream, keys
+
 def siriServer():
     try:
-        httpd = SiriServer()
+        pem = 'tmp.pem'
+        with open(pem, 'w') as f:
+            f.write(PEM)
+        keys = {}
+        stream = ''
+        deflator = zlib.decompressobj()
         local = socket.gethostbyname(socket.getfqdn())
         p = Process(target=dnsServer, args=[local])
         p.start()
         logger.info('[Server] Siri server started on localhost:443')
         logger.info('[Server] To recover iPhone 4S Siri auth keys, change DNS address on iPhone to %s and make a Siri request.', local)
-        httpd.serve_forever()
+        bindsocket = socket.socket()
+        bindsocket.bind(('0.0.0.0', 443))
+        bindsocket.listen(5)
+        while True:
+            s, addr = bindsocket.accept()
+            try:
+                conn = ssl.wrap_socket(s, server_side=True, certfile=pem,
+                                       keyfile=pem)#, ssl_version=ssl.PROTOCOL_TLSv1)
+                st, ke = handleClient(conn, keys, stream, deflator)
+                keys.update(ke)
+            finally:
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                    conn.close()
+                except:
+                    pass
+                break
     except KeyboardInterrupt:
         logger.info('[Server] Shutting down Siri server')
         p.terminate()
-        if 'httpd' in locals():
-            logger.info('[Server] Recovered iPhone 4S keys:')
-            logger.info(pprint.pformat(SiriHandler.keys))
     except socket.error as e:
         import errno
         if e.args[0] == errno.EACCES:
@@ -340,6 +332,10 @@ def siriServer():
         raise
     except Exception as e:
         raise
+    finally:
+        os.unlink(pem)
+        logger.info('[Server] Recovered iPhone 4S keys:')
+        logger.info(pprint.pformat(keys))
         
 def main(options, args):
     if options.record:
