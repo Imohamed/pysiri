@@ -78,14 +78,17 @@ THE SOFTWARE.
 import os
 import sys
 import tty
+import time
 import wave
 import zlib
 import ssl
+import uuid
 import socket
 import pprint
 import httplib
 import optparse
 import commands
+import cPickle as pickle
 from select import select
 from cStringIO import StringIO
 from multiprocessing import Process
@@ -99,14 +102,6 @@ def debug(t, v, tb):
     traceback.print_exception(t, v, tb)
     print
     pdb.pm()
-
-DEBUG = False
-
-if DEBUG:
-    sys.excepthook = debug
-    logger = debugLogger
-else:
-    logger = logger
 
 PEM = """-----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAKCAQEAqvmSuDVkmfNFgFQTPUEXeiCu92ic71WssXD2+KAd+0VZ2OjU
@@ -248,80 +243,223 @@ def dnsServer(local):
         logger.info('[DNS] Shutting down DNS server')
         udps.close()
 
-def removeLeadingHex(data, hexStr):
-    length = len(hexStr) / 2
-    return data[length:] if data[:length].encode('hex') == hexStr else data
+class SiriServer(object):
+    stream = ''
+    keys = {}
+    decompressor = zlib.decompressobj()
+    def __init__(self, pem):
+        self.bindsocket = socket.socket()
+        self.bindsocket.bind(('0.0.0.0', 443))
+        self.bindsocket.listen(5)
+        self.pem = pem
 
-def handleClient(conn, keys, stream, deflator):
-    header = conn.read()
-    logger.info(header.strip())
-    keys['X-Ace-Host'] = header.split('\r\n')[-3].split(': ')[1]
-    data = conn.read()
-    while data:
-        line = removeLeadingHex(data, '0d0a') # newline
-        line = removeLeadingHex(line, 'aaccee02') # ACE header
-        stream += deflator.decompress(line)
-        stream, keys = parse(stream, keys)
-        data = conn.read()
-    return keys
-
-def parse(stream, keys):
-    import biplist
-    header = stream[:5].encode('hex')
-    if header.startswith('030000'): # Ignore PING requests
-        logger.info('PING: %d', int(header[-4:], 16))
-        stream = stream[5:]
-    header = stream[:5].encode('hex')
-    chunkSize = 1000000 if not header.startswith('0200') else int(header[-6:], 16)
-    if chunkSize < len(stream) + 5:
-        plistData = stream[5:chunkSize + 5]
-        plist = biplist.readPlistFromString(plistData)
-        if 'sessionValidationData' in plist.get('properties', {}):
-            plist['properties']['sessionValidationData'] = plist['properties']['sessionValidationData'].encode('hex')
-            keys['sessionValidationData'] = plist['properties']['sessionValidationData']
-            keys['assistantId'] = plist['properties']['assistantId']
-            keys['speechId'] = plist['properties']['speechId']
-        if 'packets' in plist.get('properties', {}):
-            encodedPackets = []
-            with open('data.spx', 'a+') as f:
-                for packet in plist['properties']['packets']:
-                    f.write(packet)
-                    encodedPackets.append(packet.encode('hex'))
-            plist['properties']['packets'] = encodedPackets
-        logger.info(pprint.pformat(plist))
-        stream = stream[chunkSize+5:]
-    return stream, keys
-
-def siriServer():
-    try:
-        pem = 'tmp.pem'
-        with open(pem, 'w') as f:
-            f.write(PEM)
-        keys = {}
-        stream = ''
-        deflator = zlib.decompressobj()
-        local = socket.gethostbyname(socket.getfqdn())
-        p = Process(target=dnsServer, args=[local])
-        p.start()
-        logger.info('[Server] Siri server started on localhost:443')
-        logger.info('[Server] To recover iPhone 4S Siri auth keys, change DNS address on iPhone to %s and make a Siri request.', local)
-        bindsocket = socket.socket()
-        bindsocket.bind(('0.0.0.0', 443))
-        bindsocket.listen(5)
+    def runForever(self):
         while True:
-            s, addr = bindsocket.accept()
+            s, addr = self.bindsocket.accept()
             try:
-                conn = ssl.wrap_socket(s, server_side=True, certfile=pem,
-                                       keyfile=pem)#, ssl_version=ssl.PROTOCOL_TLSv1)
-                st, ke = handleClient(conn, keys, stream, deflator)
-                keys.update(ke)
+                conn = ssl.wrap_socket(s, server_side=True, certfile=self.pem, keyfile=self.pem)
+                self.handleClient(conn)
+            except KeyboardInterrupt:
+                break
             finally:
                 try:
                     conn.shutdown(socket.SHUT_RDWR)
                     conn.close()
                 except:
                     pass
-                break
+
+    def removeLeadingHex(self, data, hexStr):
+        length = len(hexStr) / 2
+        return data[length:] if data[:length].encode('hex') == hexStr else data
+
+    def handleClient(self, conn):
+        header = conn.read()
+        logger.info(header.strip())
+        self.keys['X-Ace-Host'] = header.split('\r\n')[-3].split(': ')[1]
+        data = conn.read()
+        while data:
+            line = self.removeLeadingHex(data, '0d0a') # newline
+            line = self.removeLeadingHex(line, 'aaccee02') # ACE header
+            if line:
+                d = self.decompressor.decompress(line)
+                self.stream += d
+                self.parse()
+            data = conn.read()
+
+    def parse(self):
+        import biplist
+        header = self.stream[:5].encode('hex')
+        if header.startswith('030000'): # Ignore PING requests
+            logger.info('PING: %d', int(header[-4:], 16))
+            self.stream = self.stream[5:]
+        header = self.stream[:5].encode('hex')
+        chunkSize = 1000000 if not header.startswith('0200') else int(header[-6:], 16)
+        if chunkSize < len(self.stream) + 5:
+            plistData = self.stream[5:chunkSize + 5]
+            plist = biplist.readPlistFromString(plistData)
+            if 'sessionValidationData' in plist.get('properties', {}):
+                plist['properties']['sessionValidationData'] = plist['properties']['sessionValidationData'].encode('hex')
+                self.keys['sessionValidationData'] = plist['properties']['sessionValidationData']
+                self.keys['assistantId'] = plist['properties']['assistantId']
+                self.keys['speechId'] = plist['properties']['speechId']
+            if 'packets' in plist.get('properties', {}):
+                encodedPackets = []
+                with open('data.spx', 'a+') as f:
+                    for packet in plist['properties']['packets']:
+                        f.write(packet)
+                        encodedPackets.append(packet.encode('hex'))
+                plist['properties']['packets'] = encodedPackets
+            logger.info(pprint.pformat(plist))
+            self.stream = self.stream[chunkSize+5:]
+
+class SiriClient(object):
+    pingCount = 0
+    compressor = zlib.compressobj(zlib.Z_BEST_COMPRESSION)
+    def __init__(self, url, keys, speech, ca=None):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.ssl_sock = ssl.wrap_socket(s, ca_certs=ca,
+                                        cert_reqs=ssl.CERT_OPTIONAL)
+        self.ssl_sock.connect((url, 443))
+        self.keys = keys
+        self.speech = speech
+
+    def httpHeaders(self):
+        return "\r\n".join(["ACE /ace HTTP/1.0", "Host: guzzoni.apple.com",
+                            "User-Agent: Assistant(iPhone/iPhone4,1; iPhone OS/5.0/9A334) Ace/1.0",
+                            "Content-Length: 2000000000",
+                            "X-Ace-Host: " + self.keys['X-Ace-Host']]) + "\r\n\r\n"
+    
+    def contentHeader(self):
+        return 'aaccee02'.decode('hex')
+
+    def ping(self):
+        self.pingCount += 1
+        chunk = hex(0x0300000000 + eval(hex(self.pingCount)))[2:].zfill(10).decode('hex')
+        data = self.compressor.compress(chunk)
+        return data + self.compressor.flush(zlib.Z_SYNC_FLUSH)
+
+    def createPlist(self, data):
+        import biplist
+        io = StringIO()
+        writer = biplist.PlistWriter(io)
+        writer.header = 'bplist00'
+        writer.writeRoot(data)
+        plist_data = io.getvalue()
+        header = hex(0x0200000000 + eval(hex(len(plist_data))))[2:].zfill(10).decode('hex')
+        data = self.compressor.compress(header) + self.compressor.compress(plist_data)
+        return data + self.compressor.flush(zlib.Z_SYNC_FLUSH)
+
+    def loadAssistant(self):
+        plist = {'class': 'LoadAssistant',
+                 'aceId': str(uuid.uuid4()).upper(),
+                 'group': 'com.apple.ace.system',
+                 'properties': {'speechId': self.keys['speechId'],
+                                'assistantId': self.keys['assistantId'],
+                                'sessionValidationData': self.keys['sessionValidationData'].decode('hex')}}
+        return self.createPlist(plist)
+
+    def startSpeechDictation(self):
+        self.speech_session_ace_id = str(uuid.uuid4()).upper()
+        plist = {'class': 'StartSpeechDictation',
+                 'aceId': self.speech_session_ace_id,
+                 'group': 'com.apple.ace.speech',
+                 'properties': {'keyboardType': 'Default',
+                                'applicationName': 'com.apple.mobilenotes',
+                                'applicationVersion': '1.0',
+                                'fieldLabel': '',
+                                'prefixText': '',
+                                'language': 'en-US',
+                                'censorSpeech': False,
+                                'selectedText': '',
+                                'codec': 'Speex_WB_Quality8',
+                                'audioSource': 'BuiltInMic',
+                                'region': 'en_US',
+                                'postfixText': '',
+                                'keyboardReturnKey': 'Default',
+                                'interactionId': str(uuid.uuid4()).upper(),
+                                'fieldId': 'UIWebDocumentView0, NoteTextView1, NoteContentLayer0, NotesBackgroundView0, UIViewControllerWrapperView0, UINavigationTransitionView0, UILayoutContainerView0, UIWindow'}}
+        return self.createPlist(plist)
+
+    def sendSpeechPackets(self):
+        idx = 0
+        with open(self.speech, 'rb') as f:
+            for line in f:
+                plist = {'class': 'SpeechPacket',
+                         'refId': self.speech_session_ace_id,
+                         'group': 'com.apple.ace.speech',
+                         'aceId': str(uuid.uuid4()).upper(),
+                         'properties': {'packets': [line.encode('hex')],
+                                        'packetNumber': idx}}
+                self.sendData(self.createPlist(plist))
+                idx += 1
+        return idx
+
+    def finishSpeech(self, idx):
+        plist = {'class': 'FinishSpeech',
+                 'refId': self.speech_session_ace_id,
+                 'group': 'com.apple.ace.speech',
+                 'aceId': str(uuid.uuid4()).upper(),
+                 'properties': {'packetCount': idx}}
+        return self.createPlist(plist)
+
+    @staticmethod
+    def pinger(client):
+        try:
+            while True:
+                client.sendData(client.ping())
+                logger.info('[Client] Sent ping')
+                time.sleep(1)
+        except:
+            pass
+
+    def sendData(self, data):
+        self.ssl_sock.write(data)
+
+def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.sif'):
+    try:
+        with open(keyPickle, 'rb') as f:
+            keys = pickle.load(f)
+        ca = 'tmp.ca'
+        with open(ca, 'w') as f:
+            f.write(__doc__[__doc__.index('-----BEGIN CERTIFICATE-----'):__doc__.index('-----END CERTIFICATE-----') + 25])
+        client = SiriClient(url, keys, speech, ca)
+        p = Process(target=client.pinger, args=[client])
+        client.sendData(client.httpHeaders())
+        logger.info('[Client] Sent HTTP headers')
+        client.sendData(client.contentHeader())
+        logger.info('[Client] Sent content header')
+        client.sendData(client.ping())
+        logger.info('[Client] Sent ping')
+        client.sendData(client.loadAssistant())
+        logger.info('[Client] Sent LoadAssistant')
+        client.sendData(client.startSpeechDictation())
+        logger.info('[Client] Sent StartSpeechDictation')
+        idx = client.sendSpeechPackets()
+        logger.info('[Client] Sent all speech packets')
+        client.sendData(client.finishSpeech(idx))
+        logger.info('[Client] Sent FinishSpeech')
+        p.start()
+        p.join()
+    except KeyboardInterrupt:
+        logger.info('[Client] Shutting down Siri client')
+        p.terminate()
+    except Exception as e:
+        raise
+    finally:
+        os.unlink(ca)
+
+def siriServer(saveKeys=False, keyPickle='keys.pickle'):
+    try:
+        pem = 'tmp.pem'
+        with open(pem, 'w') as f:
+            f.write(PEM)
+        local = socket.gethostbyname(socket.getfqdn())
+        p = Process(target=dnsServer, args=[local])
+        p.start()
+        logger.info('[Server] Siri server started on localhost:443')
+        logger.info('[Server] To recover iPhone 4S Siri auth keys, change DNS address on iPhone to %s and make a Siri request.', local)
+        server = SiriServer(pem)
+        server.runForever()
     except KeyboardInterrupt:
         logger.info('[Server] Shutting down Siri server')
         p.terminate()
@@ -334,16 +472,26 @@ def siriServer():
         raise
     finally:
         os.unlink(pem)
-        logger.info('[Server] Recovered iPhone 4S keys:')
-        logger.info(pprint.pformat(keys))
+        if saveKeys:
+            logger.info('[Server] Recovered iPhone 4S keys:')
+            logger.info(pprint.pformat(server.keys))
+            with open(keyPickle, 'wb') as f:
+                pickle.dump(server.keys, f)
         
 def main(options, args):
+    global logger
+    if options.debug:
+        sys.excepthook = debug
+        logger = debugLogger
+    else:
+        logger = logger
     if options.record:
         data = record('input.sif')
-#    if options.client:
-#        siriClient()
+    if options.client:
+        siriClient(url='localhost' if options.debug else 'guzzoni.apple.com',
+                   keyPickle=options.keys, speech=options.speech_file)
     if options.server:
-        siriServer()
+        siriServer(saveKeys=options.save_keys, keyPickle=options.keys)
     
 if __name__ == '__main__':
     parser = optparse.OptionParser()
@@ -351,13 +499,33 @@ if __name__ == '__main__':
 %s
 
 See --help for more details.""" % __doc__)
+    parser.add_option('--debug', action='store_true', default=False,
+                      help="Turn on debug logging and PM debugging")
     parser.add_option('--record', action='store_true', default=False,
                       help="Record some audio")
-#    parser.add_option('--client', action='store_true', default=False,
-#                      help="Run the Siri client")
-    parser.add_option('--server', action='store_true', default=False,
+    client = optparse.OptionGroup(parser, 'Client options',
+                                  "These options communicate with the Siri server (real or fake).")
+    client.add_option('--client', action='store_true', default=False,
+                      help="Run the Siri client")
+    client.add_option('--speech-file', action='store', default='input.sif',
+                      help="Specify a speech file to send to the Siri server. "
+                           "Format should be the same that you get when running "
+                           "the --record option of this script.")
+    parser.add_option_group(client)
+    server = optparse.OptionGroup(parser, 'Server options',
+                                  "These options create a fake Siri server.")
+    server.add_option('--server', action='store_true', default=False,
                       help="Run the Siri server")
-
+    server.add_option('--save-keys', action='store_true', default=False,
+                      help="If enabled, the keys recovered from the iPhone 4S "
+                           "will be saved to a pickle file. The saved keys can "
+                           "then be used with the --client option of this script.")
+    parser.add_option_group(server)
+    parser.add_option('--keys', action='store', default='keys.pickle',
+                      help="Specify a pickle file for the Siri authentication "
+                           "keys. If we're running in server mode, the keys will "
+                           "be saved to this file. If running in client mode, "
+                           "the keys will be read from this file.")
     options, args = parser.parse_args()
     if all(options.__dict__[k] == v for k, v in parser.defaults.iteritems()):
         parser.print_usage()
