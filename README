@@ -1,1 +1,16 @@
-See docstrings in siri.py for more information.
+See docstrings in siri.py for more information. Requires a Mac.
+
+tl;dr:
+
+How to recover iPhone 4S Siri authentication keys
+-------------------------------------------------
+
+- Install biplist: easy_install biplist
+- Install CA to your iPhone 4S: save the CA by copying and pasting the CA from
+  the top of siri.py into a file called ca.crt. Email ca.crt to yourself and
+  on iPhone 4S.
+- Run pysiri in server mode: sudo ./siri.py --server --save-keys
+- Set DNS server on iPhone 4S to IP address of computer running pysiri.
+- Make Siri request on iPhone 4S
+- Quit pysiri by pressing Ctrl+C and your keys will be displayed in the Terminal
+  as well as saved to a Python pickle file called keys.pickle
