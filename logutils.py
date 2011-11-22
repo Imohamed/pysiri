@@ -152,7 +152,7 @@ nullLogger = makeLogger(level=logging.CRITICAL + 1)
 screenLogger = makeLogger()
 
 # Create a special logger that prints debug messages
-debugLogger = makeLogger(level=logging.DEBUG)
+debugLogger = makeLogger(level=logging.DEBUG, color=True)
 
 
 # Test code

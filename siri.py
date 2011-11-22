@@ -56,33 +56,74 @@ THE SOFTWARE.
 """
 import os
 import sys
-import tty
+import ssl
 import time
 import wave
 import zlib
-import ssl
 import uuid
 import socket
 import pprint
 import urllib
-import httplib
+import logging
 import optparse
 import commands
 import plistlib
 import cPickle as pickle
-from select import select
-from cStringIO import StringIO
 from multiprocessing import Process
-from BaseHTTPServer import HTTPServer
-from SimpleHTTPServer import SimpleHTTPRequestHandler
-
-from logutils import logger, debugLogger
 
 def debug(t, v, tb):
     import traceback, pdb
     traceback.print_exception(t, v, tb)
     print
     pdb.pm()
+
+# Private variables
+_dateTimeFormat = "%y-%m-%d %H:%M:%S"
+_infoLevelColor = '\x1b[32m' # green
+_customLoggerID = 0
+
+def _getColorEmit(fn):
+    # This doesn't work on Windows since Windows doesn't support 
+    # the ansi escape characters
+    def new(handler):
+        levelno = handler.levelno
+        if(levelno >= logging.CRITICAL):
+            color = '\x1b[31m' # red
+        elif(levelno >= logging.ERROR):
+            color = '\x1b[31m' # red
+        elif(levelno >= logging.WARNING):
+            color = '\x1b[33m' # yellow
+        elif(levelno >= logging.INFO):
+            color = _infoLevelColor # green or normal 
+        elif(levelno >= logging.DEBUG):
+            color = '\x1b[35m' # pink
+        else:
+            color = '\x1b[0m' # normal
+        handler.msg = color + handler.msg + '\x1b[0m'  # normal
+        return fn(handler)
+    return new
+
+def makeLogger(level=logging.INFO,
+               format="%(message)s"):
+    """
+    Create a custom logger with the specified properties.
+    """
+    global _customLoggerID
+    logger = logging.getLogger('LOGGER_%d' % _customLoggerID)
+    _customLoggerID += 1
+    logger.setLevel(level)
+    formatter = logging.Formatter(format, _dateTimeFormat)
+    streamHandler = logging.StreamHandler()
+    try:
+        streamHandler.emit = _getColorEmit(streamHandler.emit)
+    except:
+        pass
+    streamHandler.setFormatter(formatter)
+    logger.addHandler(streamHandler)
+    return logger
+
+logger = makeLogger()
+debugLogger = makeLogger(level=logging.DEBUG)
 
 PEM = """-----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAKCAQEAqvmSuDVkmfNFgFQTPUEXeiCu92ic71WssXD2+KAd+0VZ2OjU
@@ -607,8 +648,6 @@ def main(options, args):
     if options.debug:
         sys.excepthook = debug
         logger = debugLogger
-    else:
-        logger = logger
     if options.record:
         data = record('input.sif')
     if options.client:
