@@ -246,8 +246,10 @@ def dnsServer(local):
         udps.close()
 
 class SiriServer(object):
+    pongCount = 0
     stream = ''
     keys = {}
+    compressor = zlib.compressobj(zlib.Z_BEST_COMPRESSION)
     decompressor = zlib.decompressobj()
     def __init__(self, pem):
         self.bindsocket = socket.socket()
@@ -259,31 +261,48 @@ class SiriServer(object):
         while True:
             s, addr = self.bindsocket.accept()
             try:
-                conn = ssl.wrap_socket(s, server_side=True, certfile=self.pem, keyfile=self.pem)
-                self.handleClient(conn)
+                self.conn = ssl.wrap_socket(s, server_side=True, certfile=self.pem, keyfile=self.pem)
+                self.handleClient()
             except KeyboardInterrupt:
                 break
             finally:
                 try:
-                    conn.shutdown(socket.SHUT_RDWR)
-                    conn.close()
+                    self.conn.shutdown(socket.SHUT_RDWR)
+                    self.conn.close()
                 except:
                     pass
+
+    def pong(self):
+        self.pongCount += 1
+        chunk = hex(0x0400000000 + eval(hex(self.pongCount)))[2:].zfill(10).decode('hex')
+        data = self.compressor.compress(chunk)
+        return data + self.compressor.flush(zlib.Z_SYNC_FLUSH)
+
+    def sendData(self, data):
+        self.conn.write(data)
 
     def removeLeadingHex(self, data, hexStr):
         length = len(hexStr) / 2
         return data[length:] if data[:length].encode('hex') == hexStr else data
 
-    def handleClient(self, conn):
+    def handleClient(self):
+        conn = self.conn
         header = conn.read()
-        logger.info(header.strip())
-        self.keys['X-Ace-Host'] = header.split('\r\n')[-3].split(': ')[1]
-        data = conn.read()
+        header = header.split('\r\n')
+        end = header.index('')
+        data = header[-1]
+        header = header[:end]
+        logger.info('\n'.join(header))
+        self.keys['X-Ace-Host'] = header[-1].split(': ')[1]
+        data += conn.read()
         while data:
             line = self.removeLeadingHex(data, '0d0a') # newline
             line = self.removeLeadingHex(line, 'aaccee02') # ACE header
             if line:
-                d = self.decompressor.decompress(line)
+                try:
+                    d = self.decompressor.decompress(line)
+                except Exception as e:
+                    import pdb; pdb.set_trace()
                 self.stream += d
                 self.parse()
             data = conn.read()
@@ -392,7 +411,7 @@ class SiriClient(object):
                          'refId': self.speech_session_ace_id,
                          'group': 'com.apple.ace.speech',
                          'aceId': str(uuid.uuid4()).upper(),
-                         'properties': {'packets': [line.encode('hex')],
+                         'properties': {'packets': [line],#.encode('hex')],
                                         'packetNumber': idx}}
                 self.sendData(self.createPlist(plist))
                 idx += 1
@@ -416,30 +435,40 @@ class SiriClient(object):
         except:
             pass
 
-    def getResponse(self):
-        resp = ''
-        data = self.ssl_sock.read()
-        while data:
-            import pdb; pdb.set_trace()
-            data = self.ssl_sock.read()
-
     def removeLeadingHex(self, data, hexStr):
         length = len(hexStr) / 2
         return data[length:] if data[:length].encode('hex') == hexStr else data
 
-    def getResponse(self):
-        conn = self.ssl_sock
-        header = conn.read()
-        logger.info(header.strip())
-        data = conn.read()
-        while data:
-            line = self.removeLeadingHex(data, '0d0a') # newline
-            line = self.removeLeadingHex(line, 'aaccee02') # ACE header
-            if line:
-                d = self.decompressor.decompress(line)
-                self.stream += d
-                self.parse()
-            data = conn.read()
+    @staticmethod
+    def getResponse(client):
+        try:
+            while True:
+                conn = client.ssl_sock
+                header = conn.read()
+                header = header.split('\r\n')
+                end = header.index('')
+                data = header[-1]
+                header = header[:end]
+                logger.info('\n'.join(header))
+                for h in header:
+                    if h.startswith('Connection'):
+                        if 'close' in h:
+                            logger.info('[Client] Shutting down...')
+                            conn.shutdown(socket.SHUT_RDWR)
+                            conn.close()
+                            break
+                data += conn.read()
+                while data:
+                    line = client.removeLeadingHex(data, '0d0a') # newline
+                    line = client.removeLeadingHex(line, 'aaccee02') # ACE header
+                    if line:
+                        d = client.decompressor.decompress(line)
+                        client.stream += d
+                        client.parse()
+                    data = conn.read()
+                time.sleep(1)
+        except Exception as e:
+            pass
 
     def parse(self):
         import biplist
@@ -457,7 +486,10 @@ class SiriClient(object):
             self.stream = self.stream[chunkSize+5:]
 
     def sendData(self, data):
-        self.ssl_sock.write(data)
+        try:
+            self.ssl_sock.write(data)
+        except socket.error:
+            sys.exit(1)
 
 def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.sif'):
     try:
@@ -468,11 +500,13 @@ def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.s
             f.write(__doc__[__doc__.index('-----BEGIN CERTIFICATE-----'):__doc__.index('-----END CERTIFICATE-----') + 25])
         client = SiriClient(url, keys, speech, ca)
         p = Process(target=client.pinger, args=[client])
+        p2 = Process(target=client.getResponse, args=[client])
         client.sendData(client.httpHeaders())
         logger.info('[Client] Sent HTTP headers')
         client.sendData(client.contentHeader())
         logger.info('[Client] Sent content header')
         client.sendData(client.ping())
+        p2.start()
         logger.info('[Client] Sent ping')
         client.sendData(client.loadAssistant())
         logger.info('[Client] Sent LoadAssistant')
@@ -483,11 +517,11 @@ def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.s
         client.sendData(client.finishSpeech(idx))
         logger.info('[Client] Sent FinishSpeech')
         p.start()
-        client.getResponse()
         p.join()
     except KeyboardInterrupt:
         logger.info('[Client] Shutting down Siri client')
         p.terminate()
+        p2.terminate()
     except Exception as e:
         raise
     finally:
@@ -498,12 +532,12 @@ def siriServer(saveKeys=False, keyPickle='keys.pickle'):
         pem = 'tmp.pem'
         with open(pem, 'w') as f:
             f.write(PEM)
+        server = SiriServer(pem)
         local = socket.gethostbyname(socket.getfqdn())
         p = Process(target=dnsServer, args=[local])
         p.start()
         logger.info('[Server] Siri server started on localhost:443')
         logger.info('[Server] To recover iPhone 4S Siri auth keys, change DNS address on iPhone to %s and make a Siri request.', local)
-        server = SiriServer(pem)
         server.runForever()
     except KeyboardInterrupt:
         logger.info('[Server] Shutting down Siri server')
