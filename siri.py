@@ -316,7 +316,9 @@ class SiriServer(object):
 
 class SiriClient(object):
     pingCount = 0
+    stream = ''
     compressor = zlib.compressobj(zlib.Z_BEST_COMPRESSION)
+    decompressor = zlib.decompressobj()
     def __init__(self, url, keys, speech, ca=None):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.ssl_sock = ssl.wrap_socket(s, ca_certs=ca,
@@ -414,6 +416,46 @@ class SiriClient(object):
         except:
             pass
 
+    def getResponse(self):
+        resp = ''
+        data = self.ssl_sock.read()
+        while data:
+            import pdb; pdb.set_trace()
+            data = self.ssl_sock.read()
+
+    def removeLeadingHex(self, data, hexStr):
+        length = len(hexStr) / 2
+        return data[length:] if data[:length].encode('hex') == hexStr else data
+
+    def getResponse(self):
+        conn = self.ssl_sock
+        header = conn.read()
+        logger.info(header.strip())
+        data = conn.read()
+        while data:
+            line = self.removeLeadingHex(data, '0d0a') # newline
+            line = self.removeLeadingHex(line, 'aaccee02') # ACE header
+            if line:
+                d = self.decompressor.decompress(line)
+                self.stream += d
+                self.parse()
+            data = conn.read()
+
+    def parse(self):
+        import biplist
+        header = self.stream[:5].encode('hex')
+        if header.startswith('040000'): # Ignore PING requests
+            logger.info('PONG: %d', int(header[-4:], 16))
+            self.stream = self.stream[5:]
+        header = self.stream[:5].encode('hex')
+        chunkSize = 1000000 if not header.startswith('0200') else int(header[-6:], 16)
+        print chunkSize, len(self.stream) + 5
+        if chunkSize < len(self.stream) + 5:
+            plistData = self.stream[5:chunkSize + 5]
+            plist = biplist.readPlistFromString(plistData)
+            logger.info(pprint.pformat(plist))
+            self.stream = self.stream[chunkSize+5:]
+
     def sendData(self, data):
         self.ssl_sock.write(data)
 
@@ -441,6 +483,7 @@ def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.s
         client.sendData(client.finishSpeech(idx))
         logger.info('[Client] Sent FinishSpeech')
         p.start()
+        client.getResponse()
         p.join()
     except KeyboardInterrupt:
         logger.info('[Client] Shutting down Siri client')
