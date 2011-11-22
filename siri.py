@@ -2,7 +2,7 @@
 """
 This is a simple library to interact with Siri. It's based off the work done by
 Applidium (http://applidium.com/en/news/cracking_siri/) and the code they
-released (https://github.com/applidium/Cracking-Siri).                                                                                                           
+released (https://github.com/applidium/Cracking-Siri). 
  
 Requires PyAudio (http://people.csail.mit.edu/hubert/pyaudio/), 
 audiospeex from py-audio (http://code.google.com/p/py-audio/),
@@ -87,6 +87,7 @@ import ssl
 import uuid
 import socket
 import pprint
+import urllib
 import httplib
 import optparse
 import commands
@@ -381,6 +382,44 @@ class SiriClient(object):
                                 'sessionValidationData': self.keys['sessionValidationData'].decode('hex')}}
         return self.createPlist(plist)
 
+    def setRestrictions(self):
+        plist = {'class': 'SetRestrictions',
+                 'aceId': str(uuid.uuid4()).upper(),
+                 'group': 'com.apple.ace.system'}
+        return self.createPlist(plist)
+
+    def clearContext(self):
+        plist = {'class': 'ClearContext',
+                 'aceId': str(uuid.uuid4()).upper(),
+                 'group': 'com.apple.ace.system'}
+        return self.createPlist(plist)
+
+    def startSpeechRequest(self):
+        self.speech_session_ace_id = str(uuid.uuid4()).upper()
+        plist = {'class': 'StartSpeechRequest',
+                 'aceId': self.speech_session_ace_id,
+                 'group': 'com.apple.ace.system',
+                 'properties': {'audioSource': 'BuiltInMic',
+                                'codec': 'Speex_WB_Quality8',
+                                'handsFree': False}}
+        return self.createPlist(plist)
+
+    def setRequestOrigin(self):
+        info = urllib.urlopen('http://api.hostip.info/get_html.php?position=true').read().split('\n')
+        plist = {'aceId': str(uuid.uuid4()).upper(),
+                 'class': 'SetRequestOrigin',
+                 'group': 'com.apple.ace.system',
+                 'properties': {'age': 0,
+                                'altitude': 2014.172607421875,
+                                'direction': -1.0,
+                                'horizontalAccuracy': 1728.9098617821555,
+                                'latitude': float(info[-3].split(': ')[1]),
+                                'longitude': float(info[-2].split(': ')[1]),
+                                'speed': -1.0,
+                                'verticalAccuracy': 55.68375145211797},
+                 'refId': self.speech_session_ace_id}
+        return self.createPlist(plist)
+
     def startSpeechDictation(self):
         self.speech_session_ace_id = str(uuid.uuid4()).upper()
         plist = {'class': 'StartSpeechDictation',
@@ -406,7 +445,9 @@ class SiriClient(object):
     def sendSpeechPackets(self):
         idx = 0
         with open(self.speech, 'rb') as f:
-            for line in f:
+            data = f.readlines()
+            total = len(data)
+            for line in data:
                 plist = {'class': 'SpeechPacket',
                          'refId': self.speech_session_ace_id,
                          'group': 'com.apple.ace.speech',
@@ -415,6 +456,7 @@ class SiriClient(object):
                                         'packetNumber': idx}}
                 self.sendData(self.createPlist(plist))
                 idx += 1
+                logger.info('[Client] Sent speech packet %d of %d', idx, total)
         return idx
 
     def finishSpeech(self, idx):
@@ -473,12 +515,11 @@ class SiriClient(object):
     def parse(self):
         import biplist
         header = self.stream[:5].encode('hex')
-        if header.startswith('040000'): # Ignore PING requests
+        if header.startswith('040000'): # Ignore PONG requests
             logger.info('PONG: %d', int(header[-4:], 16))
             self.stream = self.stream[5:]
         header = self.stream[:5].encode('hex')
         chunkSize = 1000000 if not header.startswith('0200') else int(header[-6:], 16)
-        print chunkSize, len(self.stream) + 5
         if chunkSize < len(self.stream) + 5:
             plistData = self.stream[5:chunkSize + 5]
             plist = biplist.readPlistFromString(plistData)
