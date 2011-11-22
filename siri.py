@@ -4,6 +4,8 @@ This is a simple library to interact with Siri. It's based off the work done by
 Applidium (http://applidium.com/en/news/cracking_siri/) and the code they
 released (https://github.com/applidium/Cracking-Siri). 
  
+Requires plutil which means you need to be running on a Mac.
+
 Requires PyAudio (http://people.csail.mit.edu/hubert/pyaudio/), 
 audiospeex from py-audio (http://code.google.com/p/py-audio/),
 biplist (https://github.com/wooster/biplist), and the speexEnc binary (compiled
@@ -387,12 +389,14 @@ class SiriClient(object):
     def createPlist(self, data):
         import biplist
         plist_data = biplist.writePlistToString(data, binary=False)
-        with open('tmp.plist', 'w') as f:
-            f.write(plist_data)
-        os.system('plutil -convert binary1 tmp.plist')
-        with open('tmp.plist', 'rb') as f:
-            plist_data = f.read()
-        os.unlink('tmp.plist')
+        try:
+            with open('tmp.plist', 'w') as f:
+                f.write(plist_data)
+            os.system('plutil -convert binary1 tmp.plist')
+            with open('tmp.plist', 'rb') as f:
+                plist_data = f.read()
+        finally:
+            os.unlink('tmp.plist')
         header = hex(0x0200000000 + eval(hex(len(plist_data))))[2:].zfill(10).decode('hex')
         data = self.compressor.compress(header) + self.compressor.compress(plist_data)
         return data + self.compressor.flush(zlib.Z_SYNC_FLUSH)
