@@ -278,22 +278,25 @@ class SiriServer(object):
         self.pem = pem
 
     def runForever(self):
-        while True:
-            s, addr = self.bindsocket.accept()
-            try:
-                self.conn = ssl.wrap_socket(s, server_side=True, certfile=self.pem, keyfile=self.pem)
-                p = Process(target=self.ponger)
-                p.start()
-                self.handleClient()
-            except KeyboardInterrupt:
-                break
-            finally:
-                p.terminate()
+        try:
+            while True:
+                s, addr = self.bindsocket.accept()
                 try:
-                    self.conn.shutdown(socket.SHUT_RDWR)
-                    self.conn.close()
-                except:
-                    pass
+                    self.conn = ssl.wrap_socket(s, server_side=True, certfile=self.pem, keyfile=self.pem)
+                    p = Process(target=self.ponger)
+                    p.start()
+                    self.handleClient()
+                except KeyboardInterrupt:
+                    break
+                finally:
+                    p.terminate()
+                    try:
+                        self.conn.shutdown(socket.SHUT_RDWR)
+                        self.conn.close()
+                    except:
+                        pass
+        except KeyboardInterrupt:
+            pass
 
     def pong(self):
         self.pongCount += 1
@@ -518,6 +521,8 @@ class SiriClient(object):
                 client.sendData(client.ping())
                 logger.info('[Client] Sent ping')
                 time.sleep(1)
+        except KeyboardInterrupt:
+            pass
         except Exception as e:
             logger.exception('[Client] Something went wrong sending pings!')
 
@@ -552,6 +557,8 @@ class SiriClient(object):
                         client.parse()
                     data = conn.read()
                 time.sleep(1)
+        except KeyboardInterrupt:
+            pass
         except Exception as e:
             logger.exception('[Client] Something went wrong getting response from server!')
 
