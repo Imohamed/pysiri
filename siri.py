@@ -535,17 +535,6 @@ class SiriClient(object):
                         client.stream += d
                         client.parse()
                     data = conn.read()
-                closeConnection = False
-                for h in header:
-                    if h.startswith('Connection'):
-                        if 'close' in h:
-                            #logger.info('[Client] Shutting down...')
-                            #conn.shutdown(socket.SHUT_RDWR)
-                            #conn.close()
-                            closeConnection = True
-                            break
-                #if closeConnection:
-                #    break
                 time.sleep(1)
         except Exception as e:
             logger.exception('[Client] Something went wrong getting response from server!')
@@ -563,7 +552,13 @@ class SiriClient(object):
             plist = biplist.readPlistFromString(plistData)
             logger.info('[Server]')
             logger.info(pprint.pformat(plist))
+            if plist.get('class', '') == 'GetSessionCertificateResponse':
+                der = plist['properties']['certificate'][6:]
+                self.processCertificate(der)
             self.stream = self.stream[chunkSize+5:]
+
+    def processCertificate(self, der):
+        pass
 
     def sendData(self, data):
         try:
