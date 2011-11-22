@@ -18,34 +18,9 @@ The compiled code included in this directory will work on an x86_64 Mac. You'll
 need to compile the code yourself if you're on something else.
  
 To get Siri authentication keys for your iPhone 4S, you'll need to install the
-following CA certificate to your iPhone. The easiest way to install it is to
-save the file as "ca.crt" and email it to yourself. Open the email on your
-iPhone and install it:
- 
------BEGIN CERTIFICATE-----
-MIID+zCCAuOgAwIBAgIJAMync/ikJ03iMA0GCSqGSIb3DQEBBQUAMIGTMQswCQYD
-VQQGEwJVUzETMBEGA1UECAwKTmV3IE1leGljbzERMA8GA1UEBwwIU2FudGEgRmUx
-ETAPBgNVBAoMCFB5SGFja2VyMQ0wCwYDVQQLDARTaXJpMRUwEwYDVQQDDAxweWhh
-Y2tlci5jb20xIzAhBgkqhkiG9w0BCQEWFGphcmVkaG9iYnNAZ21haWwuY29tMB4X
-DTExMTExNTA2NDUwOFoXDTEyMTExNDA2NDUwOFowgZMxCzAJBgNVBAYTAlVTMRMw
-EQYDVQQIDApOZXcgTWV4aWNvMREwDwYDVQQHDAhTYW50YSBGZTERMA8GA1UECgwI
-UHlIYWNrZXIxDTALBgNVBAsMBFNpcmkxFTATBgNVBAMMDHB5aGFja2VyLmNvbTEj
-MCEGCSqGSIb3DQEJARYUamFyZWRob2Jic0BnbWFpbC5jb20wggEiMA0GCSqGSIb3
-DQEBAQUAA4IBDwAwggEKAoIBAQDJgq9D3RhiakWPQbBqWdlhi0GgV31uxDc1Bx+X
-PbRvKAJIQAP9ONwQi1hSf/0zQMy1vQ+f7OAbXUPDMT16fNBdgt84Ysvxmnm/mNi3
-Ywo+yZFk+IK1dt1WFEOM3Uc44GGUdN5y7MiUtdP2DoPNY99dEGxY0+6qS1RHSm32
-FcRbDX96JQiT1q1tDgdql6Ka5eAk8aZrJw0aaMe6z3Hk0oIK0a1iPj+JKFINfeY/
-f0yyTavE4Zqa5FHyUceKOqhLOoijXyOLi+9aS1gPxMQ47+GFYe+iTAVUoThLMnRu
-Nagz4vGmOlCimmVQKFfHFKCc6YnJrchdJmAc1Lk08c2FAiqHAgMBAAGjUDBOMB0G
-A1UdDgQWBBSs8WPSaxCLmukQ4GMmd4Y44TUj6zAfBgNVHSMEGDAWgBSs8WPSaxCL
-mukQ4GMmd4Y44TUj6zAMBgNVHRMEBTADAQH/MA0GCSqGSIb3DQEBBQUAA4IBAQAt
-+A07AQ8iRz83XF9YydG6SDZeH5ewxWXkQbKU5OuP+BlR9QIu1YJOQ79EgIctFm5e
-yJJvPtYgewD/ikO9ryCRvkMbv8bN3EhMw5JcfkU7YtYPWrjcYJlb4VKiJUs70KqJ
-DGLecXd9Nq/4xeLdSYwf0dl+OFuc0zlEtYbEPRc6zo6P9MT/ddTJh9bEpRmQPcVy
-1SdIJdgvQeOWLt8YGCFtrVV5vH8jTxJI/B/Gm7fy9ZoQBl+PLXcNCuWSSlaXqxg0
-dimWuwdtblK3pZGE1SjKlmpYcWB+CvF/f9utWFWCmf5NjyDbJ+1W1phgDrFqBAmf
-uINRrcZ3ww0ITa5IWZh7
------END CERTIFICATE-----
+"ca.crt" CA certificate to your iPhone. The easiest way to install it is to
+email the "ca.crt" file to yourself. Open the email on your iPhone 4S and
+install it.
 
 After installing the certificate, run this script as root with the --server
 option: sudo ./siri.py --server --save-keys
@@ -570,10 +545,7 @@ def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.s
     try:
         with open(keyPickle, 'rb') as f:
             keys = pickle.load(f)
-        ca = 'tmp.ca'
-        with open(ca, 'w') as f:
-            f.write(__doc__[__doc__.index('-----BEGIN CERTIFICATE-----'):__doc__.index('-----END CERTIFICATE-----') + 25])
-        client = SiriClient(url, keys, speech, ca)
+        client = SiriClient(url, keys, speech, 'ca.crt')
         p = Process(target=client.pinger, args=[client])
         p2 = Process(target=client.getResponse, args=[client])
         client.sendData(client.httpHeaders())
@@ -599,8 +571,6 @@ def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.s
         p2.terminate()
     except Exception as e:
         raise
-    finally:
-        os.unlink(ca)
 
 def siriServer(saveKeys=False, keyPickle='keys.pickle'):
     try:
