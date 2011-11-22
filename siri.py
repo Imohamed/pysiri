@@ -46,14 +46,16 @@ uINRrcZ3ww0ITa5IWZh7
 -----END CERTIFICATE-----
 
 After installing the certificate, run this script as root with the --server
-option: sudo ./siri.py --server
+option: sudo ./siri.py --server --save-keys
 
 Change the DNS server on the iPhone to the IP of the computer running this
 script (Settings -> Wi-Fi -> <blue arrow on connected network> -> DNS)
 
 Open Siri and say something. You should see your speech packets scroll by. Exit
 the script with Ctrl+C (you'll probably have to press it twice) and your keys 
-will be displayed at the bottom of the console.
+will be displayed at the bottom of the console. They'll also be saved in a
+pickle file in the current directory (where they're used in the client
+application of this script).
 
 Copyright (C) 2011 Jared Hobbs
 
