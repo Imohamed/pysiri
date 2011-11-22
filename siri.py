@@ -91,6 +91,7 @@ import urllib
 import httplib
 import optparse
 import commands
+import plistlib
 import cPickle as pickle
 from select import select
 from cStringIO import StringIO
@@ -263,10 +264,13 @@ class SiriServer(object):
             s, addr = self.bindsocket.accept()
             try:
                 self.conn = ssl.wrap_socket(s, server_side=True, certfile=self.pem, keyfile=self.pem)
+                p = Process(target=self.ponger)
+                p.start()
                 self.handleClient()
             except KeyboardInterrupt:
                 break
             finally:
+                p.terminate()
                 try:
                     self.conn.shutdown(socket.SHUT_RDWR)
                     self.conn.close()
@@ -280,7 +284,19 @@ class SiriServer(object):
         return data + self.compressor.flush(zlib.Z_SYNC_FLUSH)
 
     def sendData(self, data):
-        self.conn.write(data)
+        try:
+            self.conn.write(data)
+        except socket.error:
+            sys.exit(1)
+
+    def ponger(self):
+        try:
+            while True:
+                self.sendData(self.pong())
+                logger.info('[Server] Sent pong')
+                time.sleep(1)
+        except Exception as e:
+            logger.exception('[Server] Something went wrong sending pongs!')
 
     def removeLeadingHex(self, data, hexStr):
         length = len(hexStr) / 2
@@ -293,7 +309,7 @@ class SiriServer(object):
         end = header.index('')
         data = header[-1]
         header = header[:end]
-        logger.info('\n'.join(header))
+        logger.info('[Client]\n' + '\n'.join(header))
         self.keys['X-Ace-Host'] = header[-1].split(': ')[1]
         data += conn.read()
         while data:
@@ -306,13 +322,18 @@ class SiriServer(object):
                     import pdb; pdb.set_trace()
                 self.stream += d
                 self.parse()
-            data = conn.read()
+            try:
+                data = conn.read()
+            except:
+                logger.exception('[Server] Something went wrong reading data from client!')
+                conn.shutdown(socket.SHUT_RDWR)
+                conn.close()
 
     def parse(self):
         import biplist
         header = self.stream[:5].encode('hex')
         if header.startswith('030000'): # Ignore PING requests
-            logger.info('PING: %d', int(header[-4:], 16))
+            logger.info('[Client] PING: %d', int(header[-4:], 16))
             self.stream = self.stream[5:]
         header = self.stream[:5].encode('hex')
         chunkSize = 1000000 if not header.startswith('0200') else int(header[-6:], 16)
@@ -331,6 +352,7 @@ class SiriServer(object):
                         f.write(packet)
                         encodedPackets.append(packet.encode('hex'))
                 plist['properties']['packets'] = encodedPackets
+            logger.info('[Client]')
             logger.info(pprint.pformat(plist))
             self.stream = self.stream[chunkSize+5:]
 
@@ -364,11 +386,13 @@ class SiriClient(object):
 
     def createPlist(self, data):
         import biplist
-        io = StringIO()
-        writer = biplist.PlistWriter(io)
-        writer.header = 'bplist00'
-        writer.writeRoot(data)
-        plist_data = io.getvalue()
+        plist_data = biplist.writePlistToString(data, binary=False)
+        with open('tmp.plist', 'w') as f:
+            f.write(plist_data)
+        os.system('plutil -convert binary1 tmp.plist')
+        with open('tmp.plist', 'rb') as f:
+            plist_data = f.read()
+        os.unlink('tmp.plist')
         header = hex(0x0200000000 + eval(hex(len(plist_data))))[2:].zfill(10).decode('hex')
         data = self.compressor.compress(header) + self.compressor.compress(plist_data)
         return data + self.compressor.flush(zlib.Z_SYNC_FLUSH)
@@ -379,7 +403,7 @@ class SiriClient(object):
                  'group': 'com.apple.ace.system',
                  'properties': {'speechId': self.keys['speechId'],
                                 'assistantId': self.keys['assistantId'],
-                                'sessionValidationData': self.keys['sessionValidationData'].decode('hex')}}
+                                'sessionValidationData': plistlib.Data(self.keys['sessionValidationData'].decode('hex'))}}
         return self.createPlist(plist)
 
     def setRestrictions(self):
@@ -474,8 +498,8 @@ class SiriClient(object):
                 client.sendData(client.ping())
                 logger.info('[Client] Sent ping')
                 time.sleep(1)
-        except:
-            pass
+        except Exception as e:
+            logger.exception('[Client] Something went wrong sending pings!')
 
     def removeLeadingHex(self, data, hexStr):
         length = len(hexStr) / 2
@@ -486,19 +510,18 @@ class SiriClient(object):
         try:
             while True:
                 conn = client.ssl_sock
-                header = conn.read()
-                header = header.split('\r\n')
-                end = header.index('')
-                data = header[-1]
-                header = header[:end]
-                logger.info('\n'.join(header))
-                for h in header:
-                    if h.startswith('Connection'):
-                        if 'close' in h:
-                            logger.info('[Client] Shutting down...')
-                            conn.shutdown(socket.SHUT_RDWR)
-                            conn.close()
-                            break
+                header1 = conn.read()
+                header = header1.split('\r\n')
+                if '' in header:
+                    end = header.index('')
+                    data = header[-1]
+                    header = header[:end]
+                else:
+                    data = ''
+                if 'Server' in header1:
+                    logger.info('[Server]\n' + '\n'.join(header))
+                else:
+                    data = '\r\n'.join(header)
                 data += conn.read()
                 while data:
                     line = client.removeLeadingHex(data, '0d0a') # newline
@@ -508,21 +531,33 @@ class SiriClient(object):
                         client.stream += d
                         client.parse()
                     data = conn.read()
+                closeConnection = False
+                for h in header:
+                    if h.startswith('Connection'):
+                        if 'close' in h:
+                            #logger.info('[Client] Shutting down...')
+                            #conn.shutdown(socket.SHUT_RDWR)
+                            #conn.close()
+                            closeConnection = True
+                            break
+                #if closeConnection:
+                #    break
                 time.sleep(1)
         except Exception as e:
-            pass
+            logger.exception('[Client] Something went wrong getting response from server!')
 
     def parse(self):
         import biplist
         header = self.stream[:5].encode('hex')
         if header.startswith('040000'): # Ignore PONG requests
-            logger.info('PONG: %d', int(header[-4:], 16))
+            logger.info('[Server] PONG: %d', int(header[-4:], 16))
             self.stream = self.stream[5:]
         header = self.stream[:5].encode('hex')
         chunkSize = 1000000 if not header.startswith('0200') else int(header[-6:], 16)
         if chunkSize < len(self.stream) + 5:
             plistData = self.stream[5:chunkSize + 5]
             plist = biplist.readPlistFromString(plistData)
+            logger.info('[Server]')
             logger.info(pprint.pformat(plist))
             self.stream = self.stream[chunkSize+5:]
 
