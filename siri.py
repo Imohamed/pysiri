@@ -340,7 +340,7 @@ class SiriServer(object):
                 try:
                     d = self.decompressor.decompress(line)
                 except Exception as e:
-                    import pdb; pdb.set_trace()
+                    pass
                 self.stream += d
                 self.parse()
             try:
@@ -371,8 +371,8 @@ class SiriServer(object):
                 with open('data.spx', 'a+') as f:
                     for packet in plist['properties']['packets']:
                         f.write(packet)
-                        encodedPackets.append(packet.encode('hex'))
-                plist['properties']['packets'] = encodedPackets
+                        #encodedPackets.append(packet.encode('hex'))
+                #plist['properties']['packets'] = encodedPackets
             logger.info('[Client]')
             logger.info(pprint.pformat(plist))
             self.stream = self.stream[chunkSize+5:]
@@ -624,6 +624,8 @@ def siriServer(saveKeys=False, keyPickle='keys.pickle'):
             f.write(PEM)
         server = SiriServer(pem)
         local = socket.gethostbyname(socket.getfqdn())
+        if local == '127.0.0.1':
+            local = raw_input("Enter this computer's IP address: ")
         p = Process(target=dnsServer, args=[local])
         p.start()
         logger.info('[Server] Siri server started on localhost:443')
