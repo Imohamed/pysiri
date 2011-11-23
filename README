@@ -1,4 +1,5 @@
-See docstrings in siri.py for more information. Requires a Mac.
+See docstrings in siri.py for more information. Requires a Mac in client mode
+and record mode but works platform independent in server mode.
 
 tl;dr:
 
