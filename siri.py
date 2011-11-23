@@ -499,7 +499,7 @@ class SiriClient(object):
                          'refId': self.speech_session_ace_id,
                          'group': 'com.apple.ace.speech',
                          'aceId': str(uuid.uuid4()).upper(),
-                         'properties': {'packets': [line],#.encode('hex')],
+                         'properties': {'packets': [plistlib.Data(line.encode('hex'))],
                                         'packetNumber': idx}}
                 self.sendData(self.createPlist(plist))
                 idx += 1
@@ -514,11 +514,10 @@ class SiriClient(object):
                  'properties': {'packetCount': idx}}
         return self.createPlist(plist)
 
-    @staticmethod
-    def pinger(client):
+    def pinger(self):
         try:
             while True:
-                client.sendData(client.ping())
+                self.sendData(self.ping())
                 logger.info('[Client] Sent ping')
                 time.sleep(1)
         except KeyboardInterrupt:
@@ -594,14 +593,13 @@ def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.s
         with open(keyPickle, 'rb') as f:
             keys = pickle.load(f)
         client = SiriClient(url, keys, speech, 'ca.crt')
-        p = Process(target=client.pinger, args=[client])
-        p2 = Process(target=client.getResponse, args=[client])
+        p = Process(target=client.getResponse, args=[client])
         client.sendData(client.httpHeaders())
         logger.info('[Client] Sent HTTP headers')
         client.sendData(client.contentHeader())
         logger.info('[Client] Sent content header')
         client.sendData(client.ping())
-        p2.start()
+        p.start()
         logger.info('[Client] Sent ping')
         client.sendData(client.loadAssistant())
         logger.info('[Client] Sent LoadAssistant')
@@ -611,8 +609,7 @@ def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.s
         logger.info('[Client] Sent all speech packets')
         client.sendData(client.finishSpeech(idx))
         logger.info('[Client] Sent FinishSpeech')
-        p.start()
-        p.join()
+        client.pinger()
     except KeyboardInterrupt:
         logger.info('[Client] Shutting down Siri client')
         p.terminate()
