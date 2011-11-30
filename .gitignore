@@ -6,3 +6,5 @@
 *.pyc
 *.pickle
 *.spx
+*.sif
+*.raw
