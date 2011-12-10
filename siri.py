@@ -282,8 +282,8 @@ class SiriServer(object):
             while True:
                 s, addr = self.bindsocket.accept()
                 try:
-                    self.conn = ssl.wrap_socket(s, server_side=True, certfile=self.pem, keyfile=self.pem)
                     p = Process(target=self.ponger)
+                    self.conn = ssl.wrap_socket(s, server_side=True, certfile=self.pem, keyfile=self.pem)
                     p.start()
                     self.handleClient()
                 except KeyboardInterrupt:
