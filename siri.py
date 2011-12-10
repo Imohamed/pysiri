@@ -617,13 +617,12 @@ def siriClient(url='guzzoni.apple.com', keyPickle='keys.pickle', speech='input.s
     except Exception as e:
         raise
 
-def siriServer(saveKeys=False, keyPickle='keys.pickle'):
+def siriServer(saveKeys=False, keyPickle='keys.pickle', local='127.0.0.1'):
     try:
         pem = 'tmp.pem'
         with open(pem, 'w') as f:
             f.write(PEM)
         server = SiriServer(pem)
-        local = socket.gethostbyname(socket.getfqdn())
         if local == '127.0.0.1':
             local = raw_input("Enter this computer's IP address: ")
         p = Process(target=dnsServer, args=[local])
@@ -660,9 +659,10 @@ def main(options, args):
         siriClient(url='localhost' if options.debug else 'guzzoni.apple.com',
                    keyPickle=options.keys, speech=options.speech_file)
     if options.server:
-        siriServer(saveKeys=options.save_keys, keyPickle=options.keys)
+        siriServer(saveKeys=options.save_keys, keyPickle=options.keys, local=options.server_ip)
     
 if __name__ == '__main__':
+    local = socket.gethostbyname(socket.getfqdn())
     parser = optparse.OptionParser()
     parser.set_usage("""%%prog [OPTIONS]
 %s
@@ -685,6 +685,9 @@ See --help for more details.""" % __doc__)
                                   "These options create a fake Siri server.")
     server.add_option('--server', action='store_true', default=False,
                       help="Run the Siri server")
+    server.add_option('--server-ip', action='store', default=local,
+                      help="Specify the IP address to use for the DNS server. "
+                           "Defaults to %default.")
     server.add_option('--save-keys', action='store_true', default=False,
                       help="If enabled, the keys recovered from the iPhone 4S "
                            "will be saved to a pickle file. The saved keys can "
