@@ -289,7 +289,14 @@ class SiriServer(object):
                 except KeyboardInterrupt:
                     break
                 finally:
-                    p.terminate()
+                    try:
+                        p.terminate()
+                    except AttributeError:
+                        msg = '[Server] Error! Have you installed ca.crt on your iPhone 4S? ' + \
+                              'If not, email ca.crt to your iPhone 4S, open the email, ' + \
+                              'tap the attachment, and install the certificate. Then try again.'
+                        logger.exception(msg)
+                        sys.exit(1)
                     try:
                         self.conn.shutdown(socket.SHUT_RDWR)
                         self.conn.close()
